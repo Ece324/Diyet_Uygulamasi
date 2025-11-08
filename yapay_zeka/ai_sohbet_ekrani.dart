@@ -17,7 +17,7 @@ class _AiSohbetEkraniState extends State<AiSohbetEkrani> {
   bool _useDirectAPI = true; // Direkt API'yi kullan
 
   // Google Gemini API Key - AYNI KALABİLİR
-  static const String API_KEY = "AIzaSyBxH06atX6ITBdaMW9IpllIz-V4TSDZCSM";
+  static const String API_KEY = "//API KEY";
 
   // Direkt REST API ile Gemini'ye bağlanma
   Future<String> _geminiDirektAPI(String soru) async {
@@ -228,4 +228,5 @@ class _AiSohbetEkraniState extends State<AiSohbetEkrani> {
       ),
     );
   }
+
 }
