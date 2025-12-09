@@ -1,7 +1,8 @@
-import 'dart:convert';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class AiSohbetEkrani extends StatefulWidget {
   const AiSohbetEkrani({super.key});
@@ -12,221 +13,321 @@ class AiSohbetEkrani extends StatefulWidget {
 
 class _AiSohbetEkraniState extends State<AiSohbetEkrani> {
   final TextEditingController _mesajController = TextEditingController();
-  final List<Map<String, String>> _mesajlar = [];
+  final ScrollController _scrollController = ScrollController();
+  
+  // UI'da göstermek için mesaj listesi
+  final List<UIMesaj> _uiMesajlar = [];
+  
   bool _isLoading = false;
-  bool _useDirectAPI = true; // Direkt API'yi kullan
 
-  // Google Gemini API Key - AYNI KALABİLİR
-  static const String API_KEY = "//API KEY";
+  // --- GROQ API ANAHTARINI BURAYA YAPIŞTIR ---
+  static const String _apiKey = "gsk_X0lfjn..."; // KENDİ Groq Anahtarınızı buraya ekleyin;
+  static const String _model = "llama-3.1-8b-instant"; // Güncellenmiş model adı
+  
+  // Konuşma geçmişini tutmak için
+  List<Map<String, String>> _chatHistory = [];
 
-  // Direkt REST API ile Gemini'ye bağlanma
-  Future<String> _geminiDirektAPI(String soru) async {
-    try {
-      final response = await http.post(
-        Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=$API_KEY'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: json.encode({
-          "contents": [
-            {
-              "parts": [
-                {"text": "Sen bir diyet ve beslenme asistanısın. Kullanıcılara sağlıklı beslenme, diyet, egzersiz konularında tavsiyeler ver. Asla tıbbi teşhis veya tedavi önerme. Kısa, motive edici ve yardımcı cevaplar ver. Cevapların Türkçe olmalı."}
-              ]
-            },
-            {
-              "parts": [
-                {"text": soru}
-              ]
-            }
-          ],
-          "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 500,
-          }
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
-          return data['candidates'][0]['content']['parts'][0]['text'] ?? "Cevap alınamadı.";
-        } else {
-          throw Exception("API cevap formatı beklenenden farklı: ${response.body}");
-        }
-      } else {
-        throw Exception("HTTP ${response.statusCode}: ${response.body}");
-      }
-    } catch (e) {
-      throw Exception("API Hatası: $e");
-    }
-  }
-
-  // Google Generative AI Paketi ile
-  Future<String> _geminiWithPackage(String soru) async {
-    try {
-      final model = GenerativeModel(
-        model: 'gemini-pro',
-        apiKey: API_KEY,
-        generationConfig: GenerationConfig(
-          maxOutputTokens: 500,
-          temperature: 0.7,
-        ),
-      );
-
-      final prompt = "Sen bir diyet ve beslenme asistanısın. Kullanıcılara sağlıklı beslenme, diyet, egzersiz konularında tavsiyeler ver. Asla tıbbi teşhis veya tedavi önerme. Kısa, motive edici ve yardımcı cevaplar ver. Cevapların Türkçe olmalı.\n\nKullanıcı: $soru";
-      
-      final content = Content.text(prompt);
-      final response = await model.generateContent([content]);
-      
-      return response.text ?? "Cevap alınamadı.";
-    } catch (e) {
-      throw Exception("Paket Hatası: $e");
-    }
+  @override
+  void initState() {
+    super.initState();
+    // Sistem mesajını basitleştir
+    _chatHistory.add({
+      'role': 'system',
+      'content': 'Sen bir diyet ve beslenme asistanısın. Kullanıcılara sağlıklı beslenme, diyet, su tüketimi ve egzersiz konularında arkadaşça tavsiyeler ver. Asla tıbbi teşhis koyma veya ilaç önerme. Cevapların motive edici, kısa ve Türkçe olsun. En fazla 3-4 cümle ile cevap ver.'
+    });
+    
+    debugPrint('Groq API Anahtarı başlangıcı: ${_apiKey.substring(0, min(8, _apiKey.length))}...');
+    debugPrint('Model: $_model');
   }
 
   Future<void> _mesajGonder() async {
-    if (_mesajController.text.isEmpty) return;
-    
-    final String soru = _mesajController.text;
+    final text = _mesajController.text.trim();
+    if (text.isEmpty) return;
+
     _mesajController.clear();
 
+    // 1. Kullanıcı mesajını ekrana ekle
     setState(() {
-      _mesajlar.add({'rol': 'kullanici', 'mesaj': soru});
+      _uiMesajlar.add(UIMesaj(rol: 'kullanici', mesaj: text));
       _isLoading = true;
     });
+    _scrollToBottom();
 
     try {
-      String cevap;
-      
-      if (_useDirectAPI) {
-        cevap = await _geminiDirektAPI(soru);
-      } else {
-        cevap = await _geminiWithPackage(soru);
-      }
-
-      setState(() {
-        _mesajlar.add({'rol': 'model', 'mesaj': cevap});
+      // 2. Kullanıcı mesajını geçmişe ekle
+      _chatHistory.add({
+        'role': 'user',
+        'content': text
       });
-    } catch (e) {
-      debugPrint("Hata: $e");
+
+      // 3. Groq API'ye istek gönder - DEBUG EKLENDİ
+      debugPrint('--- DEBUG BAŞLANGIÇ ---');
+      debugPrint('API Anahtarı: ${_apiKey.substring(0, min(10, _apiKey.length))}...');
+      debugPrint('Model: $_model');
+      debugPrint('Geçmiş uzunluğu: ${_chatHistory.length}');
       
-      // Hata durumunda diğer yöntemi dene
-      if (_useDirectAPI) {
-        _useDirectAPI = false;
-        _mesajGonder();
-        return;
+      final requestBody = jsonEncode({
+        'model': _model,
+        'messages': _chatHistory,
+        'temperature': 0.7,
+        'max_tokens': 500,
+      });
+      
+      debugPrint('İstek Gövdesi: $requestBody');
+      debugPrint('İstek URL: https://api.groq.com/openai/v1/chat/completions');
+
+      final response = await http.post(
+        Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
+        headers: {
+          'Authorization': 'Bearer $_apiKey',
+          'Content-Type': 'application/json',
+        },
+        body: requestBody,
+      );
+
+      debugPrint('Yanıt Durum Kodu: ${response.statusCode}');
+      debugPrint('Yanıt Gövdesi: ${response.body}');
+      debugPrint('--- DEBUG SONU ---');
+
+      if (response.statusCode == 200) {
+        try {
+          final Map<String, dynamic> responseBody = jsonDecode(response.body);
+          final String responseText = responseBody['choices'][0]['message']['content'];
+
+          // 4. AI cevabını geçmişe ekle
+          _chatHistory.add({
+            'role': 'assistant',
+            'content': responseText
+          });
+
+          // 5. Gelen cevabı ekrana ekle
+          setState(() {
+            _uiMesajlar.add(UIMesaj(rol: 'model', mesaj: responseText));
+          });
+        } catch (e) {
+          debugPrint('JSON parse hatası: $e');
+          throw Exception('Yanıt işlenirken hata: $e');
+        }
+      } else {
+        String errorMessage = 'API hatası: ${response.statusCode}';
+        
+        try {
+          final errorBody = jsonDecode(response.body);
+          if (errorBody['error'] != null) {
+            errorMessage += ' - ${errorBody['error']['message'] ?? errorBody['error']}';
+          }
+        } catch (_) {
+          errorMessage += ' - ${response.body}';
+        }
+        
+        debugPrint('Hata detayı: $errorMessage');
+        throw Exception(errorMessage);
+      }
+      
+    } catch (e) {
+      debugPrint("API Hatası (catch): $e");
+      debugPrint("Hata tipi: ${e.runtimeType}");
+      
+      String errorMessage;
+      if (e is FormatException) {
+        errorMessage = "API yanıtı beklenen formatta değil";
+      } else if (e is http.ClientException) {
+        errorMessage = "İnternet bağlantı hatası: $e";
+      } else {
+        errorMessage = "Hata: $e";
       }
       
       setState(() {
-        _mesajlar.add({
-          'rol': 'model', 
-          'mesaj': "Teknik bir sorun oluştu. Lütfen daha sonra tekrar deneyin. Hata detayı: ${e.toString()}"
-        });
+        _uiMesajlar.add(UIMesaj(
+          rol: 'hata', 
+          mesaj: errorMessage
+        ));
       });
     } finally {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+      });
+      _scrollToBottom();
     }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Sanal Diyetisyen Asistanı - Gemini AI"),
-        backgroundColor: Colors.green,
-        foregroundColor: Colors.white,
+        title: const Text("Diyet Asistanı"),
+        backgroundColor: Colors.white,
+        elevation: 1,
+        titleTextStyle: const TextStyle(color: Colors.black, fontSize: 20, fontWeight: FontWeight.bold),
+        iconTheme: const IconThemeData(color: Colors.green),
       ),
       body: Column(
         children: [
+          // Mesaj Listesi
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(8.0),
-              itemCount: _mesajlar.length,
-              itemBuilder: (context, index) {
-                final mesaj = _mesajlar[index];
-                bool bendenMi = mesaj['rol'] == 'kullanici';
-                return Container(
-                  alignment: bendenMi ? Alignment.centerRight : Alignment.centerLeft,
-                  margin: const EdgeInsets.symmetric(vertical: 4),
-                  child: Container(
-                    constraints: BoxConstraints(
-                      maxWidth: MediaQuery.of(context).size.width * 0.8,
-                    ),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: bendenMi ? Colors.green[100] : Colors.blue[50],
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Text(
-                      mesaj['mesaj']!,
-                      style: TextStyle(
-                        color: bendenMi ? Colors.green[900] : Colors.blue[900],
-                      ),
-                    ),
+            child: _uiMesajlar.isEmpty
+                ? _buildEmptyState()
+                : ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _uiMesajlar.length,
+                    itemBuilder: (context, index) {
+                      final msg = _uiMesajlar[index];
+                      return _buildMessageBubble(msg);
+                    },
                   ),
-                );
-              },
-            ),
           ),
-          if (_isLoading) 
+          
+          // Yükleniyor Göstergesi
+          if (_isLoading)
             const Padding(
-              padding: EdgeInsets.all(8.0),
-              child: Column(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 8),
-                  Text("Gemini AI düşünüyor...", style: TextStyle(color: Colors.grey)),
+                  SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 10),
+                  Text("Asistan yazıyor...", style: TextStyle(color: Colors.grey)),
                 ],
               ),
             ),
-          Container(
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardColor,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.3),
-                  spreadRadius: 1,
-                  blurRadius: 5,
-                )
-              ]
-            ),
-            padding: EdgeInsets.only(
-              left: 16, 
-              right: 8, 
-              top: 8, 
-              bottom: MediaQuery.of(context).viewInsets.bottom + 8
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _mesajController,
-                    decoration: InputDecoration(
-                      hintText: 'Gemini AI\'ya sağlıklı beslenme hakkında soru sorun...',
-                      filled: true,
-                      fillColor: Colors.grey[100],
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16)
-                    ),
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => _mesajGonder(),
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.send),
-                  color: Colors.green,
-                  onPressed: _mesajGonder,
-                ),
-              ],
-            ),
+
+          // Mesaj Yazma Alanı
+          _buildInputArea(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.eco, size: 80, color: Colors.green.withOpacity(0.3)),
+          const SizedBox(height: 16),
+          const Text(
+            "Merhaba! Ben senin diyet asistanınım.\nBana sağlıklı beslenme hakkında\nher şeyi sorabilirsin.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey, fontSize: 16),
           ),
         ],
       ),
     );
   }
 
+  Widget _buildMessageBubble(UIMesaj msg) {
+    final isMe = msg.rol == 'kullanici';
+    final isError = msg.rol == 'hata';
+
+    return Align(
+      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.all(16),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
+        decoration: BoxDecoration(
+          color: isError 
+              ? Colors.red[100] 
+              : (isMe ? Colors.green : Colors.grey[200]),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(20),
+            topRight: const Radius.circular(20),
+            bottomLeft: isMe ? const Radius.circular(20) : const Radius.circular(4),
+            bottomRight: isMe ? const Radius.circular(4) : const Radius.circular(20),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              msg.mesaj,
+              style: TextStyle(
+                color: isMe ? Colors.white : (isError ? Colors.red[900] : Colors.black87),
+                fontSize: 16,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInputArea() {
+    return Container(
+      padding: EdgeInsets.fromLTRB(
+        16, 
+        16, 
+        16, 
+        MediaQuery.of(context).viewInsets.bottom + 16
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 10,
+            offset: const Offset(0, -1),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _mesajController,
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _mesajGonder(),
+              decoration: InputDecoration(
+                hintText: "Bir şeyler sor...",
+                hintStyle: TextStyle(color: Colors.grey[400]),
+                filled: true,
+                fillColor: Colors.grey[100],
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          CircleAvatar(
+            backgroundColor: Colors.green,
+            radius: 24,
+            child: IconButton(
+              icon: const Icon(Icons.send, color: Colors.white, size: 20),
+              onPressed: _isLoading ? null : _mesajGonder,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Mesajları tutmak için basit bir model sınıfı
+class UIMesaj {
+  final String rol; // 'kullanici', 'model' veya 'hata'
+  final String mesaj;
+
+  UIMesaj({required this.rol, required this.mesaj});
 }
